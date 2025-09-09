@@ -48,17 +48,22 @@ def get_time_window_and_timezone() -> tuple:
     return start_utc, end_utc
 
 
-def extract_last_entry(comment: str) -> str:
+def extract_last_entries(comment: str, num_entries: int = 3) -> str:
     """
-    Извлекает последнюю запись из комментария менеджера.
+    Извлекает последние записи из комментария менеджера, которые ещё не обработаны.
+    Возвращает строку, объединяя эти записи.
     """
-    lines = comment.strip().split('\n')
-    last_entry = ""
+    lines = [line.strip() for line in comment.strip().split('\n') if line.strip()]
+
+    unprocessed_lines = []
     for line in reversed(lines):
-        if line.strip():
-            last_entry = line.strip()
-            break
-    return last_entry
+        if not line.endswith(MARKER):
+            unprocessed_lines.insert(0, line)
+        else:
+            break  # Останавливаемся, как только находим обработанную строку
+
+    # Возвращаем последние 'num_entries' необработанных строк
+    return '\n'.join(unprocessed_lines[-num_entries:])
 
 
 def process_order(order_data: dict):
@@ -79,18 +84,18 @@ def process_order(order_data: dict):
         print(f"  В заказе {order_id} не указан ответственный менеджер. Пропускаем.")
         return
 
-    # Извлекаем последнюю запись для анализа
-    last_entry_to_analyze = extract_last_entry(operator_comment)
+    # Извлекаем последние 3 записи для анализа
+    last_entries_to_analyze = extract_last_entries(operator_comment)
 
-    # Проверяем, был ли комментарий уже обработан
-    if last_entry_to_analyze.strip().endswith(MARKER):
-        print(f"  {MARKER} Последняя запись уже обработана. Пропускаю заказ.")
+    # Проверяем, есть ли что-то для анализа
+    if not last_entries_to_analyze:
+        print(f"  ✅ Все последние записи уже обработаны. Пропускаю заказ.")
         return
 
-    print(f"  Анализирую только последнюю запись: {last_entry_to_analyze}")
+    print(f"  Анализирую только последние записи:\n{last_entries_to_analyze}")
 
-    # Отправляем последнюю запись на анализ в OpenAI
-    tasks_to_create = analyze_comment_with_openai(last_entry_to_analyze)
+    # Отправляем последние записи на анализ в OpenAI
+    tasks_to_create = analyze_comment_with_openai(last_entries_to_analyze)
 
     # Создаем задачи в RetailCRM
     if tasks_to_create:

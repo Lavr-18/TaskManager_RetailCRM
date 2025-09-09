@@ -8,20 +8,25 @@ load_dotenv()
 
 # Указываем ID заказа для тестирования
 ORDER_ID_TO_TEST = 23937
+MARKER = '✅'
 
 
-def extract_last_entry(comment: str) -> str:
+def extract_last_entries(comment: str, num_entries: int = 3) -> str:
     """
-    Извлекает последнюю запись из комментария менеджера.
-    Логика: разбивает комментарий на строки и возвращает последнюю непустую строку.
+    Извлекает последние записи из комментария менеджера, которые ещё не обработаны.
+    Возвращает строку, объединяя эти записи.
     """
-    lines = comment.strip().split('\n')
-    last_entry = ""
+    lines = [line.strip() for line in comment.strip().split('\n') if line.strip()]
+
+    unprocessed_lines = []
     for line in reversed(lines):
-        if line.strip():
-            last_entry = line.strip()
-            break
-    return last_entry
+        if not line.endswith(MARKER):
+            unprocessed_lines.insert(0, line)
+        else:
+            break  # Останавливаемся, как только находим обработанную строку
+
+    # Возвращаем последние 'num_entries' необработанных строк
+    return '\n'.join(unprocessed_lines[-num_entries:])
 
 
 def test_single_order():
@@ -54,18 +59,17 @@ def test_single_order():
     print(operator_comment)
     print("-" * 50)
 
-    # Шаг 3: Извлекаем последнюю запись для анализа
-    last_entry_to_analyze = extract_last_entry(operator_comment)
+    # Шаг 3: Извлекаем последние записи для анализа
+    last_entries_to_analyze = extract_last_entries(operator_comment)
 
-    # Проверяем, был ли комментарий уже обработан
-    if last_entry_to_analyze.strip().endswith('✅'):
-        print(f"✅ Последняя запись уже обработана. Пропускаю заказ.")
+    if not last_entries_to_analyze:
+        print(f"✅ Все последние записи уже обработаны. Пропускаю заказ.")
         return
 
-    print(f"Анализирую только последнюю запись: {last_entry_to_analyze}")
+    print(f"Анализирую только последние записи:\n{last_entries_to_analyze}")
 
     # Шаг 4: Отправляем последнюю запись на анализ в OpenAI
-    tasks_to_create = analyze_comment_with_openai(last_entry_to_analyze)
+    tasks_to_create = analyze_comment_with_openai(last_entries_to_analyze)
 
     # Шаг 5: Создаем задачи в RetailCRM
     if tasks_to_create:
@@ -104,7 +108,7 @@ def test_single_order():
                     task_id = response.get('id')
                     print(f"  Задача #{i + 1} успешно создана! ID задачи: {task_id}")
                     # Обновляем комментарий, добавляя ✅ к последней строке
-                    new_comment = operator_comment.strip() + ' ✅'
+                    new_comment = operator_comment.strip() + ' ' + MARKER
                     update_response = update_order_comment(ORDER_ID_TO_TEST, new_comment)
                     if update_response.get('success'):
                         print(f"  ✅ Комментарий к заказу успешно обновлен.")

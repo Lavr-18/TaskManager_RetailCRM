@@ -1,88 +1,84 @@
 import os
+import openai
 import json
 import re
-from openai import OpenAI
 from dotenv import load_dotenv
 from typing import List, Dict, Any
-from datetime import datetime
 
 load_dotenv()
 
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-client = OpenAI(api_key=OPENAI_API_KEY)
-
-PROMPT_TEMPLATE = """
-Текущая дата: {current_date}
-Проанализируй следующий текст из комментария оператора в RetailCRM. Извлеки из него все задачи, которые нужно создать. Для каждой задачи определи:
-1. Тип задачи (выбери один из следующих: 'Звонок', 'WhatsApp', 'Email', 'Шоурум').
-2. Дату и время выполнения (в формате 'YYYY-MM-DD HH:MM'). Если время не указано, используй '10:00'. Если дата не указана, используй текущую дату.
-3. Короткий и понятный текст задачи.
-4. Дополнительный комментарий к задаче.
-
-Важные правила:
-- Верни результат в виде массива JSON-объектов.
-- Верни ТОЛЬКО JSON-код, без каких-либо пояснений, заголовков или дополнительного текста.
-- Если в тексте нет явных задач, верни пустой JSON-массив: [].
-- Если в тексте указана только дата без года, используй текущий год.
-
-Пример ответа:
-[
-  {{
-    "type": "WhatsApp",
-    "date_time": "2025-09-05 10:00",
-    "task": "Написать клиенту",
-    "commentary": "Напомнить о предложении, связанном с акцией на доставку"
-  }}
-]
-
-Текст для анализа: "{comment_text}"
-"""
+# Устанавливаем ключ API из переменных окружения
+openai.api_key = os.getenv('OPENAI_API_KEY')
 
 
-def analyze_comment_with_openai(comment_text: str) -> List[Dict[str, Any]]:
-    print("Анализ комментария с помощью OpenAI...")
+def analyze_comment_with_openai(comment: str) -> List[Dict[str, Any]]:
+    """
+    Отправляет комментарий на анализ в OpenAI и возвращает список найденных задач
+    в виде JSON-объектов.
+    """
+    if not openai.api_key:
+        print("Ошибка: Ключ OpenAI API не установлен.")
+        return []
+
+    system_prompt = """
+    Ты — продвинутый ассистент, который анализирует комментарии менеджеров к заказам в CRM-системе.
+    Твоя задача — находить в тексте будущие задачи (такие как "позвонить", "отправить", "связаться") и извлекать по ним ключевую информацию.
+
+    При анализе учитывай следующие правила:
+    - Игнорируй любые записи, которые не являются будущими задачами, например, "дубль заказа", "обратной связи нет", "бросила трубку".
+    - Игнорируй записи с прошедшими датами или те, которые описывают уже произошедшие события.
+    - Извлекай только явные задачи, которые нужно выполнить в будущем.
+    - Если в комментарии нет явных задач, которые нужно поставить, верни пустой список [].
+
+    Твой ответ должен быть в формате JSON-массива, где каждый элемент — это объект с тремя полями:
+    - "task": краткое описание задачи, например "Написать на WhatsApp", "Позвонить".
+    - "date_time": дата и время выполнения задачи в формате ГГГГ-ММ-ДД ЧЧ:ММ. Используй текущий год и разумное время, если оно не указано (например, 10:00 утра). Если указан только день недели, используй ближайшую дату.
+    - "marked_line": точная строка из исходного текста, которая содержит эту задачу. Эта строка будет использоваться для проставления маркера ✅.
+
+    Пример входящего комментария:
+    "21,08 - обратной связи нет, сказал сама напишет
+    написать на вотс ап 6ого сентября
+    дубль заказа 50619"
+
+    Пример ожидаемого JSON-ответа:
+    [
+      {
+        "task": "Написать на WhatsApp",
+        "date_time": "2025-09-06 10:00",
+        "marked_line": "написать на вотс ап 6ого сентября"
+      }
+    ]
+    """
+
     try:
-        current_date_str = datetime.now().strftime('%Y-%m-%d')
-        formatted_prompt = PROMPT_TEMPLATE.format(
-            current_date=current_date_str,
-            comment_text=comment_text
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": comment}
+            ]
         )
 
-        completion = client.chat.completions.create(
-            model="gpt-4o",  # Рекомендую использовать более новую модель для лучшей производительности
-            messages=[{"role": "user", "content": formatted_prompt}],
-            temperature=0.1
-        )
+        raw_content = response.choices[0].message.content
+        print(f"Сырой ответ от OpenAI: ```json\n{raw_content}\n```")
 
-        raw_response = completion.choices[0].message.content
-        print(f"Сырой ответ от OpenAI: {raw_response}")
+        # Удаляем лишние символы из ответа, если они есть
+        clean_content = re.sub(r'```json\n|```', '', raw_content).strip()
 
-        # Надежное извлечение и очистка JSON
-        json_string = raw_response.strip()
-        if json_string.startswith("```json"):
-            json_string = json_string[7:].strip()
-        if json_string.endswith("```"):
-            json_string = json_string[:-3].strip()
+        # Загружаем JSON-данные
+        parsed_data = json.loads(clean_content)
 
-        # Проверка на пустые строки и невалидные символы перед парсингом
-        if not json_string.startswith("[") or not json_string.endswith("]"):
-            print("Не удалось найти валидный JSON-массив в ответе от OpenAI.")
-            return []
+        # Проверяем, что ответ является списком
+        if isinstance(parsed_data, list):
+            return parsed_data
 
-        parsed_tasks = json.loads(json_string)
-
-        if not isinstance(parsed_tasks, list):
-            print("Ошибка: Ответ OpenAI не является списком.")
-            return []
-        if not all(isinstance(task, dict) for task in parsed_tasks):
-            print("Ошибка: Один из элементов в ответе OpenAI не является словарем.")
-            return []
-
-        return parsed_tasks
+        print("Ошибка: Ответ OpenAI не является списком.")
+        return []
 
     except json.JSONDecodeError as e:
-        print(f"Ошибка парсинга JSON ответа от OpenAI: {e}. Сырой ответ: {raw_response}")
+        print(f"Ошибка декодирования JSON: {e}")
         return []
-    except Exception as e:
-        print(f"Ошибка при обращении к OpenAI API: {e}")
+    except openai.APIError as e:
+        print(f"Ошибка при запросе к OpenAI API: {e}")
         return []
