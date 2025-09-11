@@ -10,7 +10,7 @@ load_dotenv()
 
 # Устанавливаем часовой пояс Москвы
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
-MARKER = '✅'
+MARKER = ' ✅'
 
 
 def get_time_window_and_timezone() -> tuple:
@@ -19,23 +19,18 @@ def get_time_window_and_timezone() -> tuple:
     Возвращает начальную и конечную дату в формате UTC.
     """
     now_msk = datetime.now(MOSCOW_TZ)
-    now_utc = datetime.now(pytz.utc)
 
     # Запуск в 12:00
     # Окно: с 20:00 (предыдущий день) до 11:59 (текущий день)
     if now_msk.hour == 12:
         start_msk = now_msk.replace(hour=20, minute=0, second=0, microsecond=0) - timedelta(days=1)
         end_msk = now_msk.replace(hour=11, minute=59, second=59, microsecond=999999)
-        if now_msk.minute < 30:  # Запас времени на запуск
-            start_msk -= timedelta(minutes=1)
 
     # Запуск в 20:00
     # Окно: с 12:00 до 19:59 (текущий день)
     elif now_msk.hour == 20:
         start_msk = now_msk.replace(hour=12, minute=0, second=0, microsecond=0)
         end_msk = now_msk.replace(hour=19, minute=59, second=59, microsecond=999999)
-        if now_msk.minute < 30:  # Запас времени на запуск
-            start_msk -= timedelta(minutes=1)
 
     else:
         # Если скрипт запускается не в 12 или 20 часов, возвращаем пустой диапазон
@@ -45,6 +40,7 @@ def get_time_window_and_timezone() -> tuple:
     start_utc = start_msk.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
     end_utc = end_msk.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
 
+    print(f"Запрос истории изменений с {start_utc} до {end_utc}...")
     return start_utc, end_utc
 
 
@@ -57,7 +53,7 @@ def extract_last_entries(comment: str, num_entries: int = 3) -> str:
 
     unprocessed_lines = []
     for line in reversed(lines):
-        if not line.endswith(MARKER):
+        if not line.endswith(MARKER.strip()):
             unprocessed_lines.insert(0, line)
         else:
             break  # Останавливаемся, как только находим обработанную строку
@@ -102,25 +98,31 @@ def process_order(order_data: dict):
         print("  ✅ OpenAI успешно нашел следующие задачи. Попытка их создания...")
         for i, task_info in enumerate(tasks_to_create):
             try:
-                task_date_str = task_info.get('date_time') or task_info.get('task_datetime')
-                task_text = task_info.get('task') or task_info.get('task_text')
-                task_comment = task_info.get('commentary') or task_info.get('additional_comment') or task_info.get(
-                    'task_comment')
+                task_date_str = task_info.get('date_time')
+                task_text = task_info.get('task')
+                task_comment = task_info.get('commentary')
 
-                if not task_date_str:
-                    print(f"    В ответе OpenAI отсутствует дата для задачи #{i + 1}, пропускаем.")
+                if not (task_date_str and task_text):
+                    print(
+                        f"    В ответе OpenAI отсутствуют обязательные поля (task, date_time). Пропускаем задачу #{i + 1}.")
                     continue
 
                 task_date = datetime.strptime(task_date_str, '%Y-%m-%d %H:%M')
 
+                # Проверка и корректировка года
+                current_year = datetime.now().year
+                if task_date.year < current_year:
+                    task_date = task_date.replace(year=current_year)
+
                 if task_date < datetime.now():
-                    print(f"    Задача #{i + 1} имеет прошедшую дату ({task_date_str}), пропускаем.")
+                    print(
+                        f"    Задача #{i + 1} имеет прошедшую дату ({task_date.strftime('%Y-%m-%d %H:%M')}), пропускаем.")
                     continue
 
                 task_data = {
                     'text': task_text,
                     'commentary': task_comment,
-                    'datetime': task_date_str,
+                    'datetime': task_date.strftime('%Y-%m-%d %H:%M'),
                     'performerId': manager_id,
                     'order': {'id': order_id}
                 }
@@ -130,8 +132,11 @@ def process_order(order_data: dict):
                 if response.get('success'):
                     task_id = response.get('id')
                     print(f"    Задача #{i + 1} успешно создана! ID задачи: {task_id}")
-                    # Обновляем комментарий, добавляя ✅ к последней строке
-                    new_comment = operator_comment.strip() + ' ' + MARKER
+
+                    # Находим строку для обновления и добавляем маркер
+                    line_to_mark = task_info.get('marked_line')
+                    new_comment = operator_comment.replace(line_to_mark, f"{line_to_mark}{MARKER}")
+
                     update_response = update_order_comment(order_id, new_comment)
                     if update_response.get('success'):
                         print(f"    ✅ Комментарий к заказу успешно обновлен.")
@@ -140,8 +145,8 @@ def process_order(order_data: dict):
                 else:
                     print(f"    ❌ Ошибка при создании задачи #{i + 1}: {response}")
 
-            except ValueError:
-                print(f"    Ошибка парсинга даты: {task_date_str}. Пропускаем задачу #{i + 1}.")
+            except (ValueError, TypeError) as e:
+                print(f"    Ошибка при обработке задачи #{i + 1}: {e}. Пропускаем.")
 
     else:
         print("  ❌ OpenAI не нашел явных задач в комментарии.")
