@@ -69,12 +69,20 @@ def analyze_comment_with_openai(comment: str) -> List[Dict[str, Any]]:
         # Загружаем JSON-данные
         parsed_data = json.loads(clean_content)
 
-        # Проверяем, что ответ является списком
-        if isinstance(parsed_data, list):
+        # Новая логика: преобразуем ответ в список, если он не является им
+        if isinstance(parsed_data, dict):
+            # Если это пустой словарь, возвращаем пустой список
+            if not parsed_data:
+                return []
+            # Если это словарь с одной задачей, оборачиваем его в список
+            return [parsed_data]
+        elif isinstance(parsed_data, list):
+            # Если это уже список, возвращаем его как есть
             return parsed_data
-
-        print("Ошибка: Ответ OpenAI не является списком.")
-        return []
+        else:
+            # Если формат ответа неизвестен, возвращаем пустой список
+            print("Ошибка: Неожиданный формат ответа от OpenAI.")
+            return []
 
     except json.JSONDecodeError as e:
         print(f"Ошибка декодирования JSON: {e}")
