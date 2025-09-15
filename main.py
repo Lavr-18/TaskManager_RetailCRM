@@ -22,7 +22,7 @@ def get_time_window_and_timezone() -> tuple:
 
     # Запуск в 12:00
     # Окно: с 20:00 (предыдущий день) до 11:59 (текущий день)
-    if now_msk.hour == 14:
+    if now_msk.hour == 12:
         start_msk = now_msk.replace(hour=20, minute=0, second=0, microsecond=0) - timedelta(days=1)
         end_msk = now_msk.replace(hour=11, minute=59, second=59, microsecond=999999)
 
