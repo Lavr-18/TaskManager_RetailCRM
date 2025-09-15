@@ -109,12 +109,8 @@ def process_order(order_data: dict):
 
                 task_date = datetime.strptime(task_date_str, '%Y-%m-%d %H:%M')
 
-                # Проверка и корректировка года
-                current_year = datetime.now().year
-                if task_date.year < current_year:
-                    task_date = task_date.replace(year=current_year)
-
-                if task_date < datetime.now():
+                # ИЗМЕНЕНИЕ: Ставим задачи, если их дата не в прошлом
+                if task_date.date() < datetime.now().date():
                     print(
                         f"    Задача #{i + 1} имеет прошедшую дату ({task_date.strftime('%Y-%m-%d %H:%M')}), пропускаем.")
                     continue
