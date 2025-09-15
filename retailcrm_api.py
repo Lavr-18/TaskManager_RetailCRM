@@ -1,3 +1,5 @@
+# retailcrm_api.py
+
 import os
 import requests
 import json
@@ -29,18 +31,37 @@ def fetch_data_from_retailcrm(endpoint: str, params: Optional[Dict[str, Any]] = 
         return {}
 
 
-def post_data_to_retailcrm(endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    """Универсальная функция для POST-запросов с данными в формате application/x-www-form-urlencoded."""
+def post_data_to_retailcrm(endpoint: str, data: Dict[str, Any], use_json: bool = False) -> Dict[str, Any]:
+    """
+    Универсальная функция для POST-запросов к RetailCRM API.
+    Обрабатывает ошибки и выводит детали.
+    """
     url = f"{RETAILCRM_BASE_URL}/api/v5/{endpoint}"
     params = {"apiKey": RETAILCRM_API_KEY}
 
+    print(f"Попытка POST-запроса к {url} с параметрами {params}...")
+
     try:
-        response = requests.post(url, params=params, data=data, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
+        if use_json:
+            print(f"Отправляемый JSON-payload: {json.dumps(data, indent=2)}")
+            response = requests.post(url, params=params, json=data, timeout=REQUEST_TIMEOUT)
+        else:
+            print(f"Отправляемые form-data: {data}")
+            response = requests.post(url, params=params, data=data, timeout=REQUEST_TIMEOUT)
+
+        response.raise_for_status()  # Вызовет исключение для ошибок 4xx/5xx
         return response.json()
     except requests.exceptions.RequestException as e:
-        print(f"Ошибка при POST-запросе к RetailCRM API (endpoint: {endpoint}): {e}")
-        return {}
+        # Детальный вывод ошибок
+        error_info = f"Ошибка при POST-запросе к RetailCRM API (endpoint: {endpoint}): {e}"
+        if e.response is not None:
+            try:
+                error_details = e.response.json()
+                error_info += f". Детали: {error_details}"
+            except json.JSONDecodeError:
+                error_info += f". Текст ответа: {e.response.text}"
+        print(error_info)
+        return {"success": False, "error": error_info}
 
 
 def get_order_history(since_id: Optional[int] = None) -> Dict[str, Any]:
@@ -72,29 +93,23 @@ def get_order_by_id(order_id: int) -> Optional[Dict[str, Any]]:
     return None
 
 
-def create_task(task_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Создает новую задачу в RetailCRM."""
+def create_task(task_data: dict) -> dict:
+    """
+    Создает задачу в RetailCRM, сериализуя данные в JSON-строку.
+    """
     print("Попытка создать задачу в RetailCRM...")
 
-    # Формируем словарь задачи
-    task_payload = {
-        'text': task_data.get('text', 'Новая задача'),
-        'commentary': task_data.get('commentary', ''),
-        'datetime': task_data.get('datetime'),
-        'performerId': task_data.get('performerId'),
-        'order': {'id': task_data.get('order', {}).get('id')}
-    }
-
     # Сериализуем словарь задачи в JSON-строку
-    task_json_string = json.dumps(task_payload)
+    task_json_string = json.dumps(task_data)
 
-    # Формируем итоговый POST-запрос
+    # Формируем итоговый payload для отправки в виде form-data
     payload = {
-        'site': RETAILCRM_SITE_CODE,
-        'task': task_json_string
+        'task': task_json_string,
+        'site': RETAILCRM_SITE_CODE  # Для некоторых методов RetailCRM требует site
     }
 
-    return post_data_to_retailcrm('tasks/create', data=payload)
+    # Отправляем form-data (use_json=False)
+    return post_data_to_retailcrm('tasks/create', data=payload, use_json=False)
 
 
 def update_order_comment(order_id: int, new_comment: str) -> Dict[str, Any]:
@@ -119,4 +134,5 @@ def update_order_comment(order_id: int, new_comment: str) -> Dict[str, Any]:
         'by': 'id'  # Добавляем параметр для указания, что используется внутренний ID
     }
 
+    # Используем универсальную POST-функцию
     return post_data_to_retailcrm(f'orders/{order_id}/edit', data=payload)

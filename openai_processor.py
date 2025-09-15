@@ -35,6 +35,10 @@ def analyze_comment_with_openai(comment: str) -> List[Dict[str, Any]]:
     -   Описания без привязки ко времени ("обратной связи нет", "бросила трубку").
 3.  **Год**: Для всех дат используй текущий год (`{datetime.now().year}`), если год не указан в тексте.
 4.  **Время**: Если в тексте не указано конкретное время, используй стандартное время 10:00.
+5.  **Слова-синонимы**: Слово "кас" является сокращением от "касание" и означает, что нужно связаться с клиентом.
+
+## Строгое правило:
+Извлекай задачу **только в том случае, если в комментарии есть явное указание на дату (например, 15.09) или относительный период (например, завтра, через 3 дня)**. Если такой информации нет, верни пустой JSON-массив.
 
 ## Формат ответа
 Твой ответ должен быть **исключительно** в формате JSON-массива. Каждый объект в массиве должен иметь следующие три поля:
@@ -83,9 +87,28 @@ def analyze_comment_with_openai(comment: str) -> List[Dict[str, Any]]:
     []
     ```
 
+**Пример 4 (Игнорирование без даты):**
+-   **Входной текст:** "ДОСТАВКА КП ГЕОДАР"
+-   **Ожидаемый JSON-ответ:**
+    ```json
+    []
+    ```
+
+**Пример 5 (Новое правило: "кас"):**
+-   **Входной текст:** "кас 16.09"
+-   **Ожидаемый JSON-ответ:**
+    ```json
+    [
+      {{
+        "task": "Связаться с клиентом",
+        "date_time": "2025-09-16 10:00",
+        "marked_line": "кас 16.09"
+      }}
+    ]
+    ```
+
 Твой ответ должен содержать только один JSON-объект, который является массивом.
 """
-
     try:
         response = openai.chat.completions.create(
             model="gpt-4o-mini",
@@ -105,23 +128,29 @@ def analyze_comment_with_openai(comment: str) -> List[Dict[str, Any]]:
         # Загружаем JSON-данные
         parsed_data = json.loads(clean_content)
 
-        # Новая логика: преобразуем ответ в список, если он не является им
-        if isinstance(parsed_data, dict):
-            # Если это пустой словарь, возвращаем пустой список
-            if not parsed_data:
+        # Новая, более надежная логика обработки ответа
+        if isinstance(parsed_data, list):
+            # Если это массив, фильтруем его
+            return [item for item in parsed_data if item.get('task') and item.get('date_time')]
+        elif isinstance(parsed_data, dict):
+            # Если это словарь, проверяем на пустой ответ или вложенность
+            if parsed_data.get('response') is not None:
+                # Обработка {"response": []}
+                if isinstance(parsed_data.get('response'), list):
+                    return [item for item in parsed_data['response'] if item.get('task') and item.get('date_time')]
+                else:
+                    return []
+            # Обработка одиночного объекта {} или {"task": "..."}
+            elif parsed_data.get('task') and parsed_data.get('date_time'):
+                return [parsed_data]
+            else:
                 return []
-            # Если это словарь с одной задачей, оборачиваем его в список
-            return [parsed_data]
-        elif isinstance(parsed_data, list):
-            # Если это уже список, возвращаем его как есть
-            return parsed_data
         else:
-            # Если формат ответа неизвестен, возвращаем пустой список
             print("Ошибка: Неожиданный формат ответа от OpenAI.")
             return []
 
     except json.JSONDecodeError as e:
-        print(f"Ошибка декодирования JSON: {e}")
+        print(f"Ошибка декодирования JSON: {e}. Сырой контент: {clean_content}")
         return []
     except openai.APIError as e:
         print(f"Ошибка при запросе к OpenAI API: {e}")

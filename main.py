@@ -10,19 +10,19 @@ load_dotenv()
 
 # Устанавливаем часовой пояс Москвы
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
-MARKER = ' ✅'
+MARKER = ' 📅'
 
 
 def get_time_window_and_timezone() -> tuple:
     """
     Определяет временное окно для анализа заказов в зависимости от текущего времени по МСК.
-    Возвращает начальную и конечную дату в формате UTC.
+    Возвращает начальную и конечную дату в формате МСК.
     """
     now_msk = datetime.now(MOSCOW_TZ)
 
     # Запуск в 12:00
     # Окно: с 20:00 (предыдущий день) до 11:59 (текущий день)
-    if now_msk.hour == 12:
+    if now_msk.hour == 14:
         start_msk = now_msk.replace(hour=20, minute=0, second=0, microsecond=0) - timedelta(days=1)
         end_msk = now_msk.replace(hour=11, minute=59, second=59, microsecond=999999)
 
@@ -37,11 +37,12 @@ def get_time_window_and_timezone() -> tuple:
         return None, None
 
     # Конвертируем временные окна в формат UTC для API
-    start_utc = start_msk.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
-    end_utc = end_msk.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+    # ИЗМЕНЕНИЕ: Теперь мы отправляем время в МСК напрямую
+    start_str = start_msk.strftime('%Y-%m-%d %H:%M:%S')
+    end_str = end_msk.strftime('%Y-%m-%d %H:%M:%S')
 
-    print(f"Запрос истории изменений с {start_utc} до {end_utc}...")
-    return start_utc, end_utc
+    print(f"Запрос истории изменений с {start_str} до {end_str}...")
+    return start_str, end_str
 
 
 def extract_last_entries(comment: str, num_entries: int = 3) -> str:
@@ -102,9 +103,10 @@ def process_order(order_data: dict):
                 task_text = task_info.get('task')
                 task_comment = task_info.get('commentary')
 
-                if not (task_date_str and task_text):
+                # Дополнительная проверка на пустые значения, чтобы избежать ошибок API
+                if not (task_date_str and task_text and task_date_str.strip() and task_text.strip()):
                     print(
-                        f"    В ответе OpenAI отсутствуют обязательные поля (task, date_time). Пропускаем задачу #{i + 1}.")
+                        f"    В ответе OpenAI отсутствуют обязательные поля (task, date_time) или они пусты. Пропускаем задачу #{i + 1}.")
                     continue
 
                 task_date = datetime.strptime(task_date_str, '%Y-%m-%d %H:%M')
@@ -154,14 +156,14 @@ def main():
     print("Запускаю периодическую проверку новых заказов...")
 
     # Шаг 1: Определяем временное окно
-    start_date_utc, end_date_utc = get_time_window_and_timezone()
+    start_date, end_date = get_time_window_and_timezone()
 
-    if start_date_utc is None:
+    if start_date is None:
         print("Текущее время не соответствует запланированному запуску (12:00 или 20:00 МСК). Завершение работы.")
         return
 
     # Шаг 2: Получаем историю изменений в заданном окне
-    history_data = get_order_history_by_dates(start_date_utc, end_date_utc)
+    history_data = get_order_history_by_dates(start_date, end_date)
 
     if not history_data.get('success'):
         print("Ошибка при получении истории заказов. Завершение работы.")

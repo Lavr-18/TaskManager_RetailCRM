@@ -7,8 +7,8 @@ from openai_processor import analyze_comment_with_openai
 load_dotenv()
 
 # Указываем ID заказа для тестирования
-ORDER_ID_TO_TEST = 24420
-MARKER = '✅'
+ORDER_ID_TO_TEST = 24321
+MARKER = '📅'
 
 
 def extract_last_entries(comment: str, num_entries: int = 3) -> str:
@@ -63,7 +63,7 @@ def test_single_order():
     last_entries_to_analyze = extract_last_entries(operator_comment)
 
     if not last_entries_to_analyze:
-        print(f"✅ Все последние записи уже обработаны. Пропускаю заказ.")
+        print(f"📅 Все последние записи уже обработаны. Пропускаю заказ.")
         return
 
     print(f"Анализирую только последние записи:\n{last_entries_to_analyze}")
@@ -73,7 +73,7 @@ def test_single_order():
 
     # Шаг 5: Создаем задачи в RetailCRM
     if tasks_to_create:
-        print("✅ OpenAI успешно нашел следующие задачи. Попытка их создания...")
+        print("📅 OpenAI успешно нашел следующие задачи. Попытка их создания...")
         for i, task_info in enumerate(tasks_to_create):
             try:
                 # Надежный поиск даты, текста и комментария
@@ -111,7 +111,7 @@ def test_single_order():
                     new_comment = operator_comment.strip() + ' ' + MARKER
                     update_response = update_order_comment(ORDER_ID_TO_TEST, new_comment)
                     if update_response.get('success'):
-                        print(f"  ✅ Комментарий к заказу успешно обновлен.")
+                        print(f"  📅 Комментарий к заказу успешно обновлен.")
                     else:
                         print(f"  ❌ Ошибка при обновлении комментария: {update_response}")
                 else:

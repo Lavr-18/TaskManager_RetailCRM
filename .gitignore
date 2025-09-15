@@ -12,3 +12,5 @@ __pycache__/
 
 # Игнорировать файл с последним обработанным ID (на всякий случай)
 last_processed_id.txt
+
+test_script.py
