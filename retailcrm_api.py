@@ -20,7 +20,10 @@ def fetch_data_from_retailcrm(endpoint: str, params: Optional[Dict[str, Any]] = 
     url = f"{RETAILCRM_BASE_URL}/api/v5/{endpoint}"
     if params is None:
         params = {}
+
+    # ВОЗВРАЩАЕМСЯ К ИСХОДНОМУ РЕШЕНИЮ: Передаем apiKey и site как параметры URL
     params["apiKey"] = RETAILCRM_API_KEY
+    params["site"] = RETAILCRM_SITE_CODE
 
     try:
         response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
@@ -37,9 +40,12 @@ def post_data_to_retailcrm(endpoint: str, data: Dict[str, Any], use_json: bool =
     Обрабатывает ошибки и выводит детали.
     """
     url = f"{RETAILCRM_BASE_URL}/api/v5/{endpoint}"
-    params = {"apiKey": RETAILCRM_API_KEY}
 
-    print(f"Попытка POST-запроса к {url} с параметрами {params}...")
+    # API-ключ и сайт передаются в POST-параметрах
+    params = {
+        "apiKey": RETAILCRM_API_KEY,
+        "site": RETAILCRM_SITE_CODE
+    }
 
     try:
         if use_json:
@@ -83,6 +89,18 @@ def get_order_history_by_dates(start_date: str, end_date: str) -> Dict[str, Any]
     return fetch_data_from_retailcrm("orders/history", params=params)
 
 
+def get_recent_orders(limit: int = 50) -> Optional[Dict[str, Any]]:
+    """
+    Получает последние заказы из RetailCRM.
+    """
+    print(f"Запрос последних {limit} заказов...")
+    params = {'limit': limit}
+    data = fetch_data_from_retailcrm("orders", params=params)
+    if data.get('success') and data.get('orders'):
+        return data
+    return None
+
+
 def get_order_by_id(order_id: int) -> Optional[Dict[str, Any]]:
     """Получает полные данные заказа по его внутреннему ID."""
     print(f"Запрос полных данных заказа {order_id}...")
@@ -104,8 +122,7 @@ def create_task(task_data: dict) -> dict:
 
     # Формируем итоговый payload для отправки в виде form-data
     payload = {
-        'task': task_json_string,
-        'site': RETAILCRM_SITE_CODE  # Для некоторых методов RetailCRM требует site
+        'task': task_json_string
     }
 
     # Отправляем form-data (use_json=False)
@@ -129,7 +146,6 @@ def update_order_comment(order_id: int, new_comment: str) -> Dict[str, Any]:
 
     # Формируем итоговый POST-запрос для обновления
     payload = {
-        'site': RETAILCRM_SITE_CODE,
         'order': order_json_string,
         'by': 'id'  # Добавляем параметр для указания, что используется внутренний ID
     }

@@ -3,7 +3,7 @@ import json
 import pytz
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from retailcrm_api import get_order_by_id, get_order_history_by_dates, create_task, update_order_comment
+from retailcrm_api import get_recent_orders, create_task, update_order_comment
 from openai_processor import analyze_comment_with_openai
 
 load_dotenv()
@@ -13,36 +13,39 @@ MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 MARKER = ' 📅'
 
 
-def get_time_window_and_timezone() -> tuple:
+def get_corrected_datetime(ai_datetime_str: str, current_script_time: datetime) -> str:
     """
-    Определяет временное окно для анализа заказов в зависимости от текущего времени по МСК.
-    Возвращает начальную и конечную дату в формате МСК.
+    Корректирует дату и время задачи, следуя правилам:
+    1. Если дата в прошлом, возвращает ошибку, чтобы задача не была создана.
+    2. Если в комментарии нет времени (OpenAI возвращает 10:00), использует +1 час от текущего времени.
+    3. Если итоговое время попадает в нерабочее (после 20:00), переносит на завтра на 10:00.
     """
-    now_msk = datetime.now(MOSCOW_TZ)
+    try:
+        # Получаем текущее время скрипта
+        now_moscow = datetime.now(MOSCOW_TZ)
 
-    # Запуск в 12:00
-    # Окно: с 20:00 (предыдущий день) до 11:59 (текущий день)
-    if now_msk.hour == 12:
-        start_msk = now_msk.replace(hour=20, minute=0, second=0, microsecond=0) - timedelta(days=1)
-        end_msk = now_msk.replace(hour=11, minute=59, second=59, microsecond=999999)
+        # Парсим дату и время из ответа OpenAI
+        task_dt = datetime.strptime(ai_datetime_str, '%Y-%m-%d %H:%M').replace(tzinfo=MOSCOW_TZ)
 
-    # Запуск в 20:00
-    # Окно: с 12:00 до 19:59 (текущий день)
-    elif now_msk.hour == 20:
-        start_msk = now_msk.replace(hour=12, minute=0, second=0, microsecond=0)
-        end_msk = now_msk.replace(hour=19, minute=59, second=59, microsecond=999999)
+        # ПРАВИЛО 1: Если итоговая дата в прошлом, возвращаем ошибку, чтобы пропустить задачу.
+        if task_dt.date() < now_moscow.date():
+            raise ValueError("Задача относится к прошедшей дате и будет пропущена.")
 
-    else:
-        # Если скрипт запускается не в 12 или 20 часов, возвращаем пустой диапазон
-        return None, None
+        # ПРАВИЛО 2: Если OpenAI вернул время по умолчанию (10:00), используем +1 час
+        if task_dt.hour == 10 and task_dt.minute == 0:
+            task_dt = now_moscow + timedelta(hours=1)
+            task_dt = task_dt.replace(second=0, microsecond=0)
 
-    # Конвертируем временные окна в формат UTC для API
-    # ИЗМЕНЕНИЕ: Теперь мы отправляем время в МСК напрямую
-    start_str = start_msk.strftime('%Y-%m-%d %H:%M:%S')
-    end_str = end_msk.strftime('%Y-%m-%d %H:%M:%S')
+        # ПРАВИЛО 3: Если время попадает в нерабочее (после 20:00), переносим на завтра
+        if task_dt.hour >= 20:
+            task_dt = now_moscow + timedelta(days=1)
+            task_dt = task_dt.replace(hour=10, minute=0, second=0, microsecond=0)
 
-    print(f"Запрос истории изменений с {start_str} до {end_str}...")
-    return start_str, end_str
+        return task_dt.strftime('%Y-%m-%d %H:%M')
+
+    except (ValueError, TypeError) as e:
+        # Если что-то пошло не так, возвращаем исключение, чтобы обработать его на более высоком уровне
+        raise e
 
 
 def extract_last_entries(comment: str, num_entries: int = 3) -> str:
@@ -103,24 +106,21 @@ def process_order(order_data: dict):
                 task_text = task_info.get('task')
                 task_comment = task_info.get('commentary')
 
-                # Дополнительная проверка на пустые значения, чтобы избежать ошибок API
+                # Дополнительная проверка на пустые значения
                 if not (task_date_str and task_text and task_date_str.strip() and task_text.strip()):
                     print(
                         f"    В ответе OpenAI отсутствуют обязательные поля (task, date_time) или они пусты. Пропускаем задачу #{i + 1}.")
                     continue
 
-                task_date = datetime.strptime(task_date_str, '%Y-%m-%d %H:%M')
+                # Корректируем дату и время, если это необходимо
+                corrected_datetime_str = get_corrected_datetime(task_date_str, datetime.now(MOSCOW_TZ))
 
-                # ИЗМЕНЕНИЕ: Ставим задачи, если их дата не в прошлом
-                if task_date.date() < datetime.now().date():
-                    print(
-                        f"    Задача #{i + 1} имеет прошедшую дату ({task_date.strftime('%Y-%m-%d %H:%M')}), пропускаем.")
-                    continue
+                # ... остальной код для создания задачи
 
                 task_data = {
                     'text': task_text,
                     'commentary': task_comment,
-                    'datetime': task_date.strftime('%Y-%m-%d %H:%M'),
+                    'datetime': corrected_datetime_str,
                     'performerId': manager_id,
                     'order': {'id': order_id}
                 }
@@ -155,39 +155,24 @@ def main():
     """Главная функция для запуска периодической обработки."""
     print("Запускаю периодическую проверку новых заказов...")
 
-    # Шаг 1: Определяем временное окно
-    start_date, end_date = get_time_window_and_timezone()
+    # Шаг 1: Получаем последние 70 заказов
+    orders_data = get_recent_orders(limit=50)
 
-    if start_date is None:
-        print("Текущее время не соответствует запланированному запуску (12:00 или 20:00 МСК). Завершение работы.")
+    if not orders_data:
+        print("Ошибка при получении списка заказов. Завершение работы.")
         return
 
-    # Шаг 2: Получаем историю изменений в заданном окне
-    history_data = get_order_history_by_dates(start_date, end_date)
+    orders = orders_data.get('orders', [])
 
-    if not history_data.get('success'):
-        print("Ошибка при получении истории заказов. Завершение работы.")
+    if not orders:
+        print("Нет новых заказов для обработки. Завершение работы.")
         return
 
-    changes = history_data.get('history', [])
+    print(f"Найдено {len(orders)} последних заказов.")
 
-    if not changes:
-        print("Нет новых изменений в заказах за указанный период. Завершение работы.")
-        return
-
-    # Шаг 3: Извлекаем уникальные ID заказов, чтобы избежать дублирования
-    unique_order_ids = set(
-        [change['order']['id'] for change in changes if 'order' in change and 'id' in change['order']])
-
-    print(f"Найдено {len(unique_order_ids)} уникальных заказов с изменениями.")
-
-    # Шаг 4: Обрабатываем каждый уникальный заказ
-    for order_id in unique_order_ids:
-        order_data = get_order_by_id(order_id)
-        if order_data:
-            process_order(order_data)
-        else:
-            print(f"Не удалось получить полные данные для заказа ID: {order_id}. Пропускаю.")
+    # Шаг 2: Обрабатываем каждый заказ из полученного списка
+    for order_data in orders:
+        process_order(order_data)
 
     print("Обработка завершена.")
 
