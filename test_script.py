@@ -7,7 +7,7 @@ from openai_processor import analyze_comment_with_openai
 load_dotenv()
 
 # Указываем ID заказа для тестирования
-ORDER_ID_TO_TEST = 24321
+ORDER_ID_TO_TEST = 24647
 MARKER = '📅'
 
 
