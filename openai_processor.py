@@ -150,6 +150,11 @@ def analyze_comment_with_openai(comment: str) -> List[Dict[str, Any]]:
         )
 
         raw_content = response.choices[0].message.content
+
+        # Проверяем, что raw_content не None, прежде чем обрабатывать его
+        if raw_content is None:
+            raw_content = ""
+
         print(f"Сырой ответ от OpenAI: ```json\n{raw_content}\n```")
 
         # Удаляем лишние символы из ответа, если они есть
