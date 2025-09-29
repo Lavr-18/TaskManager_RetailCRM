@@ -69,6 +69,7 @@ def extract_last_entries(comment: str, num_entries: int = 3) -> str:
 def process_order(order_data: dict):
     """
     Обрабатывает один заказ: анализирует последнюю запись комментария и создает задачи.
+    Включает новую логику: если комментарий пуст, ставится задача на заполнение.
     """
     order_id = order_data.get('id')
     operator_comment = order_data.get('managerComment', '')
@@ -76,13 +77,38 @@ def process_order(order_data: dict):
 
     print(f"Обработка заказа ID: {order_id}")
 
-    if not operator_comment:
-        print(f"  В заказе {order_id} нет комментария менеджера. Пропускаем.")
-        return
-
     if not manager_id:
         print(f"  В заказе {order_id} не указан ответственный менеджер. Пропускаем.")
         return
+
+    if not operator_comment:
+        print(f"  ⚠️ В заказе {order_id} нет комментария менеджера. Создаю задачу на заполнение.")
+
+        # Логика новой задачи: Заполнить комментарий оператора на завтра в 12:00
+        now_moscow = datetime.now(MOSCOW_TZ)
+        tomorrow_12pm = now_moscow + timedelta(days=1)
+        tomorrow_12pm = tomorrow_12pm.replace(hour=12, minute=0, second=0, microsecond=0)
+        task_datetime_str = tomorrow_12pm.strftime('%Y-%m-%d %H:%M')
+
+        task_data = {
+            'text': "Заполнить комментарий оператора",
+            'commentary': "Комментарий менеджера был пуст при проверке. Необходимо внести актуальную информацию о заказе.",
+            'datetime': task_datetime_str,
+            'performerId': manager_id,
+            'order': {'id': order_id}
+        }
+
+        response = create_task(task_data)
+
+        if response.get('success'):
+            print(f"  ✅ Задача 'Заполнить комментарий' успешно создана! ID задачи: {response.get('id')}")
+        else:
+            print(f"  ❌ Ошибка при создании задачи 'Заполнить комментарий': {response}")
+
+        print("-" * 50)
+        return  # Прекращаем обработку, т.к. комментарий пуст
+
+    # --- Оригинальная логика обработки при НЕПУСТОМ комментарии ---
 
     # Извлекаем последние 3 записи для анализа
     last_entries_to_analyze = extract_last_entries(operator_comment)
