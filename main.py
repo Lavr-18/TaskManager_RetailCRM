@@ -69,7 +69,7 @@ def extract_last_entries(comment: str, num_entries: int = 3) -> str:
 def process_order(order_data: dict):
     """
     Обрабатывает один заказ: анализирует последнюю запись комментария и создает задачи.
-    Включает новую логику: если комментарий пуст, ставится задача на заполнение.
+    Включает логику для пустых и неформализованных комментариев.
     """
     order_id = order_data.get('id')
     operator_comment = order_data.get('managerComment', '')
@@ -84,7 +84,7 @@ def process_order(order_data: dict):
     if not operator_comment:
         print(f"  ⚠️ В заказе {order_id} нет комментария менеджера. Создаю задачу на заполнение.")
 
-        # Логика новой задачи: Заполнить комментарий оператора на завтра в 12:00
+        # Логика для ПУСТОГО комментария: Заполнить комментарий оператора на завтра в 12:00
         now_moscow = datetime.now(MOSCOW_TZ)
         tomorrow_12pm = now_moscow + timedelta(days=1)
         tomorrow_12pm = tomorrow_12pm.replace(hour=12, minute=0, second=0, microsecond=0)
@@ -108,7 +108,7 @@ def process_order(order_data: dict):
         print("-" * 50)
         return  # Прекращаем обработку, т.к. комментарий пуст
 
-    # --- Оригинальная логика обработки при НЕПУСТОМ комментарии ---
+    # --- Логика обработки при НЕПУСТОМ комментарии ---
 
     # Извлекаем последние 3 записи для анализа
     last_entries_to_analyze = extract_last_entries(operator_comment)
@@ -116,6 +116,7 @@ def process_order(order_data: dict):
     # Проверяем, есть ли что-то для анализа
     if not last_entries_to_analyze:
         print(f"  ✅ Все последние записи уже обработаны. Пропускаю заказ.")
+        print("-" * 50)
         return
 
     print(f"  Анализирую только последние записи:\n{last_entries_to_analyze}")
@@ -173,7 +174,30 @@ def process_order(order_data: dict):
                 print(f"    Ошибка при обработке задачи #{i + 1}: {e}. Пропускаем.")
 
     else:
-        print("  ❌ OpenAI не нашел явных задач в комментарии.")
+        # --- НОВАЯ ЛОГИКА: Неформализованный комментарий ---
+        print("  ❌ OpenAI не нашел явных задач в строгом формате 'ДАТА - ДЕЙСТВИЕ'.")
+
+        # Логика задачи: Запланировать дату касания на завтра в 10:00
+        now_moscow = datetime.now(MOSCOW_TZ)
+        tomorrow_10am = now_moscow + timedelta(days=1)
+        tomorrow_10am = tomorrow_10am.replace(hour=10, minute=0, second=0, microsecond=0)
+        task_datetime_str = tomorrow_10am.strftime('%Y-%m-%d %H:%M')
+
+        task_data = {
+            'text': "запланировать дату касания",
+            'commentary': "В последних записях комментария не найдена задача в строгом формате 'ДАТА - ДЕЙСТВИЕ'. Запланируйте следующее касание.",
+            'datetime': task_datetime_str,
+            'performerId': manager_id,
+            'order': {'id': order_id}
+        }
+
+        response = create_task(task_data)
+
+        if response.get('success'):
+            print(f"  ✅ Задача 'запланировать дату касания' успешно создана! ID задачи: {response.get('id')}")
+        else:
+            print(f"  ❌ Ошибка при создании задачи 'запланировать дату касания': {response}")
+
     print("-" * 50)
 
 
