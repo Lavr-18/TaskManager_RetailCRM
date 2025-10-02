@@ -69,13 +69,24 @@ def extract_last_entries(comment: str, num_entries: int = 3) -> str:
 def process_order(order_data: dict):
     """
     Обрабатывает один заказ: анализирует последнюю запись комментария и создает задачи.
-    Включает логику для пустых и неформализованных комментариев.
+    Включает логику для фильтрации, пустых и неформализованных комментариев.
     """
     order_id = order_data.get('id')
     operator_comment = order_data.get('managerComment', '')
     manager_id = order_data.get('managerId')
+    # Получаем метод оформления заказа
+    order_method = order_data.get('orderMethod')
 
     print(f"Обработка заказа ID: {order_id}")
+
+    # --- НОВАЯ ЛОГИКА ФИЛЬТРАЦИИ: Пропускаем заказы с нецелевыми методами ---
+    EXCLUDED_METHODS = ['servisnoe-obsluzhivanie', 'komus']
+
+    if order_method in EXCLUDED_METHODS:
+        print(f"  В заказе {order_id} метод оформления '{order_method}'. Пропускаем по фильтру.")
+        print("-" * 50)
+        return
+    # --- Конец фильтрации ---
 
     if not manager_id:
         print(f"  В заказе {order_id} не указан ответственный менеджер. Пропускаем.")
@@ -174,7 +185,7 @@ def process_order(order_data: dict):
                 print(f"    Ошибка при обработке задачи #{i + 1}: {e}. Пропускаем.")
 
     else:
-        # --- НОВАЯ ЛОГИКА: Неформализованный комментарий ---
+        # --- ЛОГИКА: Неформализованный комментарий ---
         print("  ❌ OpenAI не нашел явных задач в строгом формате 'ДАТА - ДЕЙСТВИЕ'.")
 
         # Логика задачи: Запланировать дату касания на завтра в 10:00
