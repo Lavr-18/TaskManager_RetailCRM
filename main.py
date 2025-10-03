@@ -12,6 +12,49 @@ load_dotenv()
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 MARKER = ' 📅'
 
+# СТАТУСЫ, по которым НУЖНО создавать задачи.
+ALLOWED_STATUSES = [
+    "new",
+    "gotovo-k-soglasovaniiu",
+    "soglasovat-sostav",
+    "agree-absence",
+    "novyi-predoplachen",
+    "novyi-oplachen",  # <--- Исправлена опечатка (добавлена запятая)
+    "availability-confirmed",
+    "client-confirmed",
+    "offer-analog",
+    "ne-dozvonilis",
+    "perezvonit-pozdnee",
+    "otpravili-varianty-na-pochtu",
+    "otpravili-varianty-v-vatsap",
+    "ready-to-wait",
+    "waiting-for-arrival",
+    "klient-zhdet-foto-s-zakupki",
+    "vizit-v-shourum",
+    "ozhidaet-oplaty",
+    "gotovim-kp",
+    "kp-gotovo-k-zashchite",
+    "soglasovanie-kp",
+    "proekt-visiak",
+    "soglasovano",
+    "oplacheno",
+    "prepayed",
+    "soglasovan-ozhidaet-predoplaty",
+    "vyezd-biologa-oplachen",
+    "vyezd-biologa-zaplanirovano",
+    "predoplata-poluchena",
+    "oplata-ne-proshla",
+    "proverka-nalichiia",
+    "obsluzhivanie-zaplanirovano",
+    "obsluzhivanie-soglasovanie",
+    "predoplachen-soglasovanie",
+    "servisnoe-obsluzhivanie-oplacheno",
+    "zakaz-obrabotan-soglasovanie",
+    "vyezd-biologa-soglasovanie"
+]
+# МЕТОДЫ, которые НУЖНО исключить.
+EXCLUDED_METHODS = ['servisnoe-obsluzhivanie', 'komus']
+
 
 def get_corrected_datetime(ai_datetime_str: str, current_script_time: datetime) -> str:
     """
@@ -74,16 +117,22 @@ def process_order(order_data: dict):
     order_id = order_data.get('id')
     operator_comment = order_data.get('managerComment', '')
     manager_id = order_data.get('managerId')
-    # Получаем метод оформления заказа
     order_method = order_data.get('orderMethod')
+    # Получаем статус заказа
+    order_status = order_data.get('status')
 
     print(f"Обработка заказа ID: {order_id}")
 
-    # --- НОВАЯ ЛОГИКА ФИЛЬТРАЦИИ: Пропускаем заказы с нецелевыми методами ---
-    EXCLUDED_METHODS = ['servisnoe-obsluzhivanie', 'komus']
-
+    # --- ЛОГИКА ФИЛЬТРАЦИИ ---
+    # 1. Фильтрация по методу оформления (исключение)
     if order_method in EXCLUDED_METHODS:
-        print(f"  В заказе {order_id} метод оформления '{order_method}'. Пропускаем по фильтру.")
+        print(f"  В заказе {order_id} метод оформления '{order_method}'. Пропускаем по фильтру методов.")
+        print("-" * 50)
+        return
+
+    # 2. Фильтрация по статусу (включение)
+    if order_status not in ALLOWED_STATUSES:
+        print(f"  В заказе {order_id} статус '{order_status}' не входит в список целевых. Пропускаем.")
         print("-" * 50)
         return
     # --- Конец фильтрации ---
