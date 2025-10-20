@@ -152,3 +152,21 @@ def update_order_comment(order_id: int, new_comment: str) -> Dict[str, Any]:
 
     # Используем универсальную POST-функцию
     return post_data_to_retailcrm(f'orders/{order_id}/edit', data=payload)
+
+
+def get_orders_by_delivery_date(date_str: str) -> Optional[Dict[str, Any]]:
+    """
+    Получает заказы из RetailCRM, у которых дата доставки совпадает с указанной.
+    Формат даты: YYYY-MM-DD.
+    Устанавливает лимит 100 для обработки всех заказов с доставкой на сегодня.
+    """
+    print(f"Запрос заказов с датой доставки: {date_str}...")
+    params = {
+        'filter[deliveryDateFrom]': date_str,
+        'filter[deliveryDateTo]': date_str,
+        'limit': 100
+    }
+    data = fetch_data_from_retailcrm("orders", params=params)
+    if data.get('success') and data.get('orders'):
+        return data
+    return None

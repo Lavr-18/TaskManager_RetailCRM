@@ -3,7 +3,8 @@ import json
 import pytz
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from retailcrm_api import get_recent_orders, create_task, update_order_comment
+# Обновленный импорт: добавлена новая функция get_orders_by_delivery_date
+from retailcrm_api import get_recent_orders, create_task, update_order_comment, get_orders_by_delivery_date
 from openai_processor import analyze_comment_with_openai
 
 load_dotenv()
@@ -54,6 +55,10 @@ ALLOWED_STATUSES = [
 ]
 # МЕТОДЫ, которые НУЖНО исключить.
 EXCLUDED_METHODS = ['servisnoe-obsluzhivanie', 'komus']
+
+# НОВЫЕ КОНСТАНТЫ для логики доставки
+UNDELIVERED_CODES = ["self-delivery", "storonniaia-dostavka"]
+DELIVERED_STATUSES = ["send-to-delivery", "dostavlen"]
 
 
 def get_corrected_datetime(ai_datetime_str: str, current_script_time: datetime) -> str:
@@ -109,6 +114,62 @@ def extract_last_entries(comment: str, num_entries: int = 3) -> str:
     return '\n'.join(unprocessed_lines[-num_entries:])
 
 
+def process_undelivered_orders(orders_list: list, now_moscow: datetime):
+    """
+    НОВАЯ ФУНКЦИЯ.
+    Обрабатывает список заказов с сегодняшней датой доставки.
+    Ставит задачу, если код доставки целевой, а статус не 'доставлен'.
+    """
+
+    print("\n--- Проверка заказов с сегодняшней датой доставки ---")
+
+    for order_data in orders_list:
+        order_id = order_data.get('id')
+        manager_id = order_data.get('managerId')
+        delivery_code = order_data.get('delivery', {}).get('code')
+        order_status = order_data.get('status')
+
+        print(f"Проверка доставки заказа ID: {order_id}")
+
+        if not manager_id:
+            print(f"  В заказе {order_id} не указан ответственный менеджер. Пропускаем.")
+            continue
+
+        # 1. Фильтр по коду доставки
+        if delivery_code not in UNDELIVERED_CODES:
+            print(f"  Код доставки '{delivery_code}' нецелевой. Пропускаем.")
+            continue
+
+        # 2. Фильтр по статусу (если статус не "доставлен" или "отправлен")
+        if order_status not in DELIVERED_STATUSES:
+            print(
+                f"  ⚠️ Заказ ID: {order_id} имеет код доставки '{delivery_code}', но статус '{order_status}'. Создаю задачу.")
+
+            # Задача ставится на завтра в 10:00 (так как сейчас 21:00)
+            tomorrow_10am = now_moscow + timedelta(days=1)
+            tomorrow_10am = tomorrow_10am.replace(hour=10, minute=0, second=0, microsecond=0)
+            task_datetime_str = tomorrow_10am.strftime('%Y-%m-%d %H:%M')
+
+            task_data = {
+                'text': "Актуализировать дату доставки",
+                'commentary': f"Заказ со способом доставки '{delivery_code}' должен был быть доставлен сегодня, но имеет статус '{order_status}'. Необходимо актуализировать дату или статус.",
+                'datetime': task_datetime_str,
+                'performerId': manager_id,
+                'order': {'id': order_id}
+            }
+
+            response = create_task(task_data)
+
+            if response.get('success'):
+                print(f"  ✅ Задача 'Актуализировать дату доставки' успешно создана! ID задачи: {response.get('id')}")
+            else:
+                print(f"  ❌ Ошибка при создании задачи 'Актуализировать дату доставки': {response}")
+        else:
+            print(f"  Статус '{order_status}' указывает на доставку. Пропускаем.")
+
+        print("-" * 50)
+
+
 def process_order(order_data: dict):
     """
     Обрабатывает один заказ: анализирует последнюю запись комментария и создает задачи.
@@ -149,13 +210,12 @@ def process_order(order_data: dict):
 
         # --- НОВАЯ ЛОГИКА для ПУСТОГО комментария (Сценарий А) ---
 
-        # Если время запуска до 16:00 (запуск в 12 или 16), ставим задачу на сегодня в 17:00
+        # Если время запуска до 17:00 (запуск в 12 или 16), ставим задачу на сегодня в 17:00
         if now_moscow.hour < 17:
             # Устанавливаем на сегодня, 17:00
             target_dt = now_moscow.replace(hour=17, minute=0, second=0, microsecond=0)
 
-            # Дополнительная проверка: если сейчас уже после 17:00 (например, если запуск в 16:00
-            # и код сработал в 17:05), ставим на завтра
+            # Дополнительная проверка: если сейчас уже после 17:00, ставим на завтра
             if target_dt < now_moscow:
                 target_dt = now_moscow + timedelta(days=1)
                 target_dt = target_dt.replace(hour=10, minute=0, second=0, microsecond=0)
@@ -284,26 +344,49 @@ def main():
     """Главная функция для запуска периодической обработки."""
     print("Запускаю периодическую проверку новых заказов...")
 
-    # Шаг 1: Получаем последние 70 заказов
+    # Шаг 0: Определяем текущее время для условного запуска новой логики
+    now_moscow = datetime.now(MOSCOW_TZ)
+    current_time_str = now_moscow.strftime('%H:%M')
+    is_evening_run = now_moscow.hour == 21  # Проверяем, что сейчас 21:xx
+
+    # --- БЛОК 1: Проверка не доставленных сегодня заказов (только в 21:00) ---
+    if is_evening_run:
+        print(f"\n--- Запускаю проверку не доставленных заказов (Время: {current_time_str}) ---")
+
+        today_date_str = now_moscow.strftime('%Y-%m-%d')
+
+        undelivered_orders_data = get_orders_by_delivery_date(today_date_str)
+
+        if undelivered_orders_data:
+            undelivered_orders = undelivered_orders_data.get('orders', [])
+            print(f"Найдено {len(undelivered_orders)} заказов с доставкой на сегодня.")
+            process_undelivered_orders(undelivered_orders, now_moscow)
+        else:
+            print("Не найдено заказов с доставкой на сегодня.")
+    else:
+        print(f"\n--- Проверка не доставленных заказов пропущена (Запуск в {current_time_str}) ---")
+
+    # --- БЛОК 2: Обработка последних 50 заказов ---
+    print("\n--- Запускаю обработку последних 50 заказов для анализа комментариев ---")
+
+    # Шаг 1: Получаем последние 50 заказов
     orders_data = get_recent_orders(limit=50)
 
     if not orders_data:
-        print("Ошибка при получении списка заказов. Завершение работы.")
-        return
+        print("Ошибка при получении списка последних заказов. Завершение работы первого блока.")
+    else:
+        orders = orders_data.get('orders', [])
 
-    orders = orders_data.get('orders', [])
+        if not orders:
+            print("Нет новых заказов для обработки. Завершение работы первого блока.")
+        else:
+            print(f"Найдено {len(orders)} последних заказов.")
 
-    if not orders:
-        print("Нет новых заказов для обработки. Завершение работы.")
-        return
+            # Шаг 2: Обрабатываем каждый заказ из полученного списка
+            for order_data in orders:
+                process_order(order_data)
 
-    print(f"Найдено {len(orders)} последних заказов.")
-
-    # Шаг 2: Обрабатываем каждый заказ из полученного списка
-    for order_data in orders:
-        process_order(order_data)
-
-    print("Обработка завершена.")
+    print("\nОбработка завершена.")
 
 
 if __name__ == "__main__":
