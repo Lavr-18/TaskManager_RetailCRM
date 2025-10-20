@@ -19,7 +19,7 @@ ALLOWED_STATUSES = [
     "soglasovat-sostav",
     "agree-absence",
     "novyi-predoplachen",
-    "novyi-oplachen",  # <--- Исправлена опечатка (добавлена запятая)
+    "novyi-oplachen",
     "availability-confirmed",
     "client-confirmed",
     "offer-analog",
@@ -121,6 +121,9 @@ def process_order(order_data: dict):
     # Получаем статус заказа
     order_status = order_data.get('status')
 
+    # Получаем текущее время запуска скрипта
+    now_moscow = datetime.now(MOSCOW_TZ)
+
     print(f"Обработка заказа ID: {order_id}")
 
     # --- ЛОГИКА ФИЛЬТРАЦИИ ---
@@ -144,11 +147,27 @@ def process_order(order_data: dict):
     if not operator_comment:
         print(f"  ⚠️ В заказе {order_id} нет комментария менеджера. Создаю задачу на заполнение.")
 
-        # Логика для ПУСТОГО комментария: Заполнить комментарий оператора на завтра в 12:00
-        now_moscow = datetime.now(MOSCOW_TZ)
-        tomorrow_12pm = now_moscow + timedelta(days=1)
-        tomorrow_12pm = tomorrow_12pm.replace(hour=12, minute=0, second=0, microsecond=0)
-        task_datetime_str = tomorrow_12pm.strftime('%Y-%m-%d %H:%M')
+        # --- НОВАЯ ЛОГИКА для ПУСТОГО комментария (Сценарий А) ---
+
+        # Если время запуска до 16:00 (запуск в 12 или 16), ставим задачу на сегодня в 17:00
+        if now_moscow.hour < 17:
+            # Устанавливаем на сегодня, 17:00
+            target_dt = now_moscow.replace(hour=17, minute=0, second=0, microsecond=0)
+
+            # Дополнительная проверка: если сейчас уже после 17:00 (например, если запуск в 16:00
+            # и код сработал в 17:05), ставим на завтра
+            if target_dt < now_moscow:
+                target_dt = now_moscow + timedelta(days=1)
+                target_dt = target_dt.replace(hour=10, minute=0, second=0, microsecond=0)
+
+        # Если время запуска 21:00 (или после 17:00)
+        else:
+            # Ставим задачу на завтра в 10:00 (как при запуске в 21:00)
+            target_dt = now_moscow + timedelta(days=1)
+            target_dt = target_dt.replace(hour=10, minute=0, second=0, microsecond=0)
+
+        task_datetime_str = target_dt.strftime('%Y-%m-%d %H:%M')
+        # --- КОНЕЦ НОВОЙ ЛОГИКИ Сценария А ---
 
         task_data = {
             'text': "Заполнить комментарий оператора",
@@ -168,7 +187,7 @@ def process_order(order_data: dict):
         print("-" * 50)
         return  # Прекращаем обработку, т.к. комментарий пуст
 
-    # --- Логика обработки при НЕПУСТОМ комментарии ---
+    # --- Логика обработки при НЕПУСТОМ комментарии (Сценарий Б и В) ---
 
     # Извлекаем последние 3 записи для анализа
     last_entries_to_analyze = extract_last_entries(operator_comment)
@@ -200,7 +219,8 @@ def process_order(order_data: dict):
                     continue
 
                 # Корректируем дату и время, если это необходимо
-                corrected_datetime_str = get_corrected_datetime(task_date_str, datetime.now(MOSCOW_TZ))
+                # Используем now_moscow, определенный выше
+                corrected_datetime_str = get_corrected_datetime(task_date_str, now_moscow)
 
                 # ... остальной код для создания задачи
 
@@ -234,11 +254,10 @@ def process_order(order_data: dict):
                 print(f"    Ошибка при обработке задачи #{i + 1}: {e}. Пропускаем.")
 
     else:
-        # --- ЛОГИКА: Неформализованный комментарий ---
+        # --- ЛОГИКА: Неформализованный комментарий (Сценарий В) ---
         print("  ❌ OpenAI не нашел явных задач в строгом формате 'ДАТА - ДЕЙСТВИЕ'.")
 
-        # Логика задачи: Запланировать дату касания на завтра в 10:00
-        now_moscow = datetime.now(MOSCOW_TZ)
+        # Логика задачи: Запланировать дату касания на завтра в 10:00 (Остается без изменений)
         tomorrow_10am = now_moscow + timedelta(days=1)
         tomorrow_10am = tomorrow_10am.replace(hour=10, minute=0, second=0, microsecond=0)
         task_datetime_str = tomorrow_10am.strftime('%Y-%m-%d %H:%M')
