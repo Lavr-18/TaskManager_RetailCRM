@@ -2,9 +2,17 @@ import os
 import json
 import pytz
 from datetime import datetime, timedelta
+from typing import Dict, Any, Optional, List  # Добавлен List для новой функции
 from dotenv import load_dotenv
-# Обновленный импорт: добавлена новая функция get_orders_by_delivery_date
-from retailcrm_api import get_recent_orders, create_task, update_order_comment, get_orders_by_delivery_date
+
+# Обновленный импорт: добавлена новая функция get_orders_by_statuses
+from retailcrm_api import (
+    get_recent_orders,
+    create_task,
+    update_order_comment,
+    get_orders_by_delivery_date,
+    get_orders_by_statuses
+)
 from openai_processor import analyze_comment_with_openai
 
 load_dotenv()
@@ -12,6 +20,25 @@ load_dotenv()
 # Устанавливаем часовой пояс Москвы
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 MARKER = ' 📅'
+
+# НОВЫЕ КОНСТАНТЫ для отслеживания статусов
+TRACKER_FILE = 'status_trackers.json'
+STATUS_CONFIGS = {
+    # Ключ: Символьный код статуса
+    "klient-zhdet-foto-s-zakupki": {
+        "max_days": 14,
+        "task_text": "связаться с клиентом / уточнить актуальность / пересогласовать"
+    },
+    "vizit-v-shourum": {
+        "max_days": 7,
+        "task_text": "связаться с клиентом"
+    },
+    "ozhidaet-oplaty": {
+        "max_days": 7,
+        "task_text": "связаться с клиентом/актуализировать счет"
+    }
+}
+TRACKED_STATUSES = list(STATUS_CONFIGS.keys())
 
 # СТАТУСЫ, по которым НУЖНО создавать задачи.
 ALLOWED_STATUSES = [
@@ -56,9 +83,165 @@ ALLOWED_STATUSES = [
 # МЕТОДЫ, которые НУЖНО исключить.
 EXCLUDED_METHODS = ['servisnoe-obsluzhivanie', 'komus']
 
-# НОВЫЕ КОНСТАНТЫ для логики доставки
+# КОНСТАНТЫ для логики доставки
 UNDELIVERED_CODES = ["self-delivery", "storonniaia-dostavka"]
 DELIVERED_STATUSES = ["send-to-delivery", "dostavlen"]
+
+
+# --- ФУНКЦИИ ДЛЯ РАБОТЫ С ФАЙЛОМ СОСТОЯНИЯ ---
+
+def load_trackers() -> Dict[str, Dict[str, str]]:
+    """Загружает данные отслеживания статусов из JSON-файла."""
+    # Словарь по умолчанию для случая отсутствия файла:
+    # { 'status_code': { 'order_id': 'YYYY-MM-DD', ... } }
+    default_trackers = {status: {} for status in TRACKED_STATUSES}
+
+    if not os.path.exists(TRACKER_FILE):
+        print(f"Файл {TRACKER_FILE} не найден. Создаю пустой трекер.")
+        return default_trackers
+
+    try:
+        with open(TRACKER_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            # Убеждаемся, что все ключи статусов присутствуют
+            for status in TRACKED_STATUSES:
+                if status not in data:
+                    data[status] = {}
+            return data
+    except (IOError, json.JSONDecodeError) as e:
+        print(f"Ошибка при чтении или парсинге {TRACKER_FILE}: {e}. Использую пустой трекер.")
+        return default_trackers
+
+
+def save_trackers(data: Dict[str, Dict[str, str]]):
+    """Сохраняет данные отслеживания статусов в JSON-файл."""
+    try:
+        with open(TRACKER_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4)
+        print(f"Трекер статусов успешно сохранен в {TRACKER_FILE}.")
+    except IOError as e:
+        print(f"Ошибка при записи в {TRACKER_FILE}: {e}")
+
+
+# --- ОСНОВНАЯ ЛОГИКА ОТСЛЕЖИВАНИЯ СТАТУСОВ ---
+
+def process_status_trackers(now_moscow: datetime):
+    """
+    Проверяет заказы на "зависание" в целевых статусах, обновляет трекер и ставит задачи.
+    """
+    print("\n--- Запуск отслеживания 'зависших' статусов ---")
+
+    # 1. Загрузка данных трекера
+    tracker_data = load_trackers()
+    today_date_str = now_moscow.strftime('%Y-%m-%d')
+
+    # 2. Получение текущих заказов из CRM для всех целевых статусов
+    crm_orders_data = get_orders_by_statuses(TRACKED_STATUSES)
+
+    if not crm_orders_data or not crm_orders_data.get('orders'):
+        print("Не удалось получить текущие заказы из CRM или список пуст. Сохраняю трекер без изменений.")
+        save_trackers(tracker_data)
+        print("-" * 50)
+        return
+
+    crm_orders_list = crm_orders_data['orders']
+    # Создаем быстрый словарь {order_id: status} для удобной проверки
+    crm_current_statuses = {str(order['id']): order['status'] for order in crm_orders_list}
+    crm_manager_ids = {str(order['id']): order.get('managerId') for order in crm_orders_list}
+
+    # Задача ставится на завтра в 10:00
+    tomorrow_10am = (now_moscow + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
+    task_datetime_str = tomorrow_10am.strftime('%Y-%m-%d %H:%M')
+
+    # 3. Обработка всех отслеживаемых статусов
+    for status_code, config in STATUS_CONFIGS.items():
+        max_days = config["max_days"]
+        task_text = config["task_text"]
+
+        print(f"\nОбработка статуса '{status_code}' (лимит: {max_days} дн.):")
+
+        # --- Часть 3А: Проверка существующих заказов на превышение лимита и удаление ---
+        orders_to_remove = []
+
+        # Используем копию, чтобы можно было изменять словарь во время итерации
+        current_tracker = tracker_data.get(status_code, {}).copy()
+
+        for order_id, date_added_str in current_tracker.items():
+            order_id_int = int(order_id)
+            current_status = crm_current_statuses.get(order_id)
+            manager_id = crm_manager_ids.get(order_id)
+
+            # ПРОВЕРКА 1: Изменился ли статус?
+            if current_status != status_code:
+                # Статус изменился -> удаляем из трекера
+                print(f"  Заказ {order_id} изменил статус на '{current_status}'. Удаляю из трекера.")
+                orders_to_remove.append(order_id)
+                continue
+
+            # ПРОВЕРКА 2: Превышен ли лимит дней?
+            if manager_id:
+                try:
+                    date_added = datetime.strptime(date_added_str, '%Y-%m-%d').replace(tzinfo=MOSCOW_TZ)
+                    # Вычисляем количество дней с даты добавления (не строго)
+                    days_in_status = (now_moscow.date() - date_added.date()).days
+
+                    # Используем нестрогое сравнение: если days_in_status > max_days (т.е., 8 дней > 7 дней)
+                    if days_in_status > max_days:
+                        # Превышен лимит -> ставим задачу и удаляем из трекера
+                        print(f"  ⚠️ Заказ {order_id} завис в статусе {days_in_status} дней! Ставлю задачу.")
+
+                        commentary = (
+                            f"Заказ находится в статусе '{status_code}' уже {days_in_status} дней. "
+                            f"Лимит {max_days} дней превышен. Необходимо выполнить действие: {task_text}."
+                        )
+
+                        task_data = {
+                            'text': task_text,
+                            'commentary': commentary,
+                            'datetime': task_datetime_str,  # Завтра в 10:00
+                            'performerId': manager_id,
+                            'order': {'id': order_id_int}
+                        }
+
+                        response = create_task(task_data)
+
+                        if response.get('success'):
+                            print(f"    ✅ Задача успешно создана! ID задачи: {response.get('id')}")
+                        else:
+                            print(f"    ❌ Ошибка при создании задачи: {response}")
+
+                        # Удаляем из трекера, чтобы избежать повторной постановки задачи
+                        orders_to_remove.append(order_id)
+                    else:
+                        print(f"  Заказ {order_id} находится в статусе {days_in_status} дней. ОК.")
+
+                except ValueError:
+                    print(f"  Ошибка парсинга даты '{date_added_str}' для заказа {order_id}. Удаляю.")
+                    orders_to_remove.append(order_id)
+            else:
+                print(f"  У заказа {order_id} нет менеджера. Пропускаю проверку лимита.")
+
+        # Применяем удаление к основному словарю
+        for order_id in orders_to_remove:
+            tracker_data[status_code].pop(order_id, None)
+
+        # --- Часть 3Б: Добавление новых заказов в трекер ---
+
+        # Получаем только те заказы, которые сейчас в CRM и находятся в текущем статусе
+        new_orders_in_status = [
+            str(order['id']) for order in crm_orders_list
+            if order.get('status') == status_code
+        ]
+
+        for order_id in new_orders_in_status:
+            if order_id not in tracker_data[status_code]:
+                # Новый заказ -> добавляем в трекер с текущей датой
+                tracker_data[status_code][order_id] = today_date_str
+                print(f"  + Новый заказ {order_id} добавлен в трекер.")
+
+    # 4. Сохранение обновленного трекера
+    save_trackers(tracker_data)
+    print("--- Отслеживание статусов завершено ---")
 
 
 def get_corrected_datetime(ai_datetime_str: str, current_script_time: datetime) -> str:
@@ -116,12 +299,14 @@ def extract_last_entries(comment: str, num_entries: int = 3) -> str:
 
 def process_undelivered_orders(orders_list: list, now_moscow: datetime):
     """
-    НОВАЯ ФУНКЦИЯ.
-    Обрабатывает список заказов с сегодняшней датой доставки.
+    Обрабатывает список заказов с сегодняшней датой доставки (только в 21:00).
     Ставит задачу, если код доставки целевой, а статус не 'доставлен'.
     """
 
     print("\n--- Проверка заказов с сегодняшней датой доставки ---")
+
+    tomorrow_10am = (now_moscow + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
+    task_datetime_str = tomorrow_10am.strftime('%Y-%m-%d %H:%M')
 
     for order_data in orders_list:
         order_id = order_data.get('id')
@@ -145,14 +330,14 @@ def process_undelivered_orders(orders_list: list, now_moscow: datetime):
             print(
                 f"  ⚠️ Заказ ID: {order_id} имеет код доставки '{delivery_code}', но статус '{order_status}'. Создаю задачу.")
 
-            # Задача ставится на завтра в 10:00 (так как сейчас 21:00)
-            tomorrow_10am = now_moscow + timedelta(days=1)
-            tomorrow_10am = tomorrow_10am.replace(hour=10, minute=0, second=0, microsecond=0)
-            task_datetime_str = tomorrow_10am.strftime('%Y-%m-%d %H:%M')
+            commentary = (
+                f"Заказ со способом доставки '{delivery_code}' должен был быть доставлен сегодня, но имеет статус '{order_status}'. "
+                f"Необходимо актуализировать дату или статус."
+            )
 
             task_data = {
                 'text': "Актуализировать дату доставки",
-                'commentary': f"Заказ со способом доставки '{delivery_code}' должен был быть доставлен сегодня, но имеет статус '{order_status}'. Необходимо актуализировать дату или статус.",
+                'commentary': commentary,
                 'datetime': task_datetime_str,
                 'performerId': manager_id,
                 'order': {'id': order_id}
@@ -349,7 +534,10 @@ def main():
     current_time_str = now_moscow.strftime('%H:%M')
     is_evening_run = now_moscow.hour == 21  # Проверяем, что сейчас 21:xx
 
-    # --- БЛОК 1: Проверка не доставленных сегодня заказов (только в 21:00) ---
+    # --- БЛОК 1: Проверка на "зависшие" статусы (НОВАЯ ЛОГИКА - запускается всегда) ---
+    process_status_trackers(now_moscow)
+
+    # --- БЛОК 2: Проверка не доставленных сегодня заказов (только в 21:00) ---
     if is_evening_run:
         print(f"\n--- Запускаю проверку не доставленных заказов (Время: {current_time_str}) ---")
 
@@ -366,19 +554,19 @@ def main():
     else:
         print(f"\n--- Проверка не доставленных заказов пропущена (Запуск в {current_time_str}) ---")
 
-    # --- БЛОК 2: Обработка последних 50 заказов ---
+    # --- БЛОК 3: Обработка последних 50 заказов для анализа комментариев (Существующая логика) ---
     print("\n--- Запускаю обработку последних 50 заказов для анализа комментариев ---")
 
     # Шаг 1: Получаем последние 50 заказов
     orders_data = get_recent_orders(limit=50)
 
     if not orders_data:
-        print("Ошибка при получении списка последних заказов. Завершение работы первого блока.")
+        print("Ошибка при получении списка последних заказов. Завершение работы блока.")
     else:
         orders = orders_data.get('orders', [])
 
         if not orders:
-            print("Нет новых заказов для обработки. Завершение работы первого блока.")
+            print("Нет новых заказов для обработки. Завершение работы блока.")
         else:
             print(f"Найдено {len(orders)} последних заказов.")
 

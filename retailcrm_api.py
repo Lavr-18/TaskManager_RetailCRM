@@ -4,7 +4,7 @@ import os
 import requests
 import json
 from dotenv import load_dotenv
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 load_dotenv()
 
@@ -167,6 +167,28 @@ def get_orders_by_delivery_date(date_str: str) -> Optional[Dict[str, Any]]:
         'limit': 100
     }
     data = fetch_data_from_retailcrm("orders", params=params)
+    if data.get('success') and data.get('orders'):
+        return data
+    return None
+
+
+def get_orders_by_statuses(statuses: List[str]) -> Optional[Dict[str, Any]]:
+    """
+    Получает заказы из RetailCRM, находящиеся в одном из указанных статусов.
+    Использует filter[extendedStatus][] для множественного запроса.
+    Устанавливает лимит 100 для обработки (только первая страница).
+    """
+    # Убедитесь, что List импортирован: from typing import Dict, Any, Optional, List
+    print(f"Запрос заказов со статусами: {', '.join(statuses)}...")
+
+    # requests автоматически преобразует список в повторяющиеся параметры типа filter[extendedStatus][]=status1&...
+    params = {
+        'filter[extendedStatus][]': statuses,
+        'limit': 100
+    }
+
+    data = fetch_data_from_retailcrm("orders", params=params)
+
     if data.get('success') and data.get('orders'):
         return data
     return None
