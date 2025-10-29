@@ -192,3 +192,24 @@ def get_orders_by_statuses(statuses: List[str]) -> Optional[Dict[str, Any]]:
     if data.get('success') and data.get('orders'):
         return data
     return None
+
+
+# --- НОВАЯ ФУНКЦИЯ ДЛЯ РЕГЛАМЕНТА "ВХОДЯЩИЙ ЗВОНОК" ---
+def get_orders_by_method_and_date_range(method_code: str, date_from: str, date_to: str) -> Optional[Dict[str, Any]]:
+    """
+    Получает заказы по коду метода оформления и в заданном диапазоне даты создания.
+    Формат дат: Y-m-d H:i:s.
+    """
+    print(f"Запрос заказов методом '{method_code}' (созданы с {date_from} по {date_to})...")
+    params = {
+        'filter[orderMethods][]': method_code,
+        'filter[createdAtFrom]': date_from,
+        'filter[createdAtTo]': date_to,
+        'limit': 100 # Установим лимит 100, чтобы охватить все новые заказы за период.
+    }
+
+    data = fetch_data_from_retailcrm("orders", params=params)
+
+    if data.get('success') and data.get('orders'):
+        return data
+    return None
