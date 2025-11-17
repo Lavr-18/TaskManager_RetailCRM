@@ -2,7 +2,7 @@ import os
 import json
 import pytz
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any
 from dotenv import load_dotenv
 
 from retailcrm_api import (
@@ -11,7 +11,8 @@ from retailcrm_api import (
     update_order_comment,
     get_orders_by_delivery_date,
     get_orders_by_statuses,
-    get_orders_by_method_and_date_range
+    get_orders_by_method_and_date_range,
+    get_orders_for_evening_check
 )
 from openai_processor import analyze_comment_with_openai
 
@@ -167,7 +168,7 @@ def process_status_trackers(now_moscow: datetime):
     today_date_str = now_moscow.strftime('%Y-%m-%d')
 
     # 2. Получение текущих заказов из CRM для всех целевых статусов
-    crm_orders_data = get_orders_by_statuses(TRACKED_STATUSES)
+    crm_orders_data = get_orders_by_statuses(statuses=TRACKED_STATUSES)
 
     if not crm_orders_data or not crm_orders_data.get('orders'):
         print("Не удалось получить текущие заказы из CRM или список пуст. Сохраняю трекер без изменений.")
@@ -268,8 +269,7 @@ def process_status_trackers(now_moscow: datetime):
     print("--- Отслеживание статусов завершено ---")
 
 
-def get_corrected_datetime(ai_datetime_str: str, current_script_time: datetime) -> str:
-    # ... (оставлено без изменений)
+def get_corrected_datetime(ai_datetime_str: str) -> str:
     """
     Корректирует дату и время задачи, следуя правилам:
     1. Если дата в прошлом, возвращает ошибку, чтобы задача не была создана.
@@ -299,7 +299,6 @@ def get_corrected_datetime(ai_datetime_str: str, current_script_time: datetime) 
 
 
 def extract_last_entries(comment: str, num_entries: int = 3) -> str:
-    # ... (оставлено без изменений)
     """
     Извлекает последние записи из комментария менеджера, которые ещё не обработаны.
     Возвращает строку, объединяя эти записи.
@@ -317,7 +316,6 @@ def extract_last_entries(comment: str, num_entries: int = 3) -> str:
 
 
 def process_undelivered_orders(orders_list: list, now_moscow: datetime):
-    # ... (оставлено без изменений)
     """
     Обрабатывает список заказов с сегодняшней датой доставки (только в 21:00).
     Ставит задачу, если код доставки целевой, а статус не 'доставлен'.
@@ -376,7 +374,6 @@ def process_undelivered_orders(orders_list: list, now_moscow: datetime):
 
 
 def process_order(order_data: dict):
-    # ... (оставлено без изменений)
     """
     Обрабатывает один заказ: анализирует последнюю запись комментария и создает задачи.
     Включает логику для фильтрации, пустых и неформализованных комментариев, а также
@@ -486,7 +483,7 @@ def process_order(order_data: dict):
                         f"    В ответе OpenAI отсутствуют обязательные поля (task, date_time) или они пусты. Пропускаем задачу #{i + 1}.")
                     continue
 
-                corrected_datetime_str = get_corrected_datetime(task_date_str, now_moscow)
+                corrected_datetime_str = get_corrected_datetime(task_date_str)
 
                 task_data = {
                     'text': task_text,
@@ -559,7 +556,6 @@ def process_missed_call_reglament(orders_list: list, now_moscow: datetime, ndz_t
     """
     print(f"\n--- Запуск регламента НДЗ для {len(orders_list)} заказов ({MISSED_CALL_METHOD}) ---")
 
-    orders_to_update_tracker = {}
     tomorrow_10am = (now_moscow + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
     task_datetime_str = tomorrow_10am.strftime('%Y-%m-%d %H:%M')
     today_date_str = now_moscow.strftime('%Y-%m-%d')
@@ -589,13 +585,15 @@ def process_missed_call_reglament(orders_list: list, now_moscow: datetime, ndz_t
 
         current_day = 0
         last_task_date = None
+        last_task_date_str = None
 
         if order_id in tracker:
             current_day = tracker[order_id].get('day', 0)
             last_task_date_str = tracker[order_id].get('last_task_date')
             try:
-                last_task_date = datetime.strptime(last_task_date_str, '%Y-%m-%d').date()
-            except:
+                if last_task_date_str:
+                    last_task_date = datetime.strptime(last_task_date_str, '%Y-%m-%d').date()
+            except (ValueError, TypeError):
                 pass  # Пропускаем, если дата не парсится
 
         next_day = current_day + 1
@@ -648,6 +646,60 @@ def process_missed_call_reglament(orders_list: list, now_moscow: datetime, ndz_t
 
     # Сохраняем обновленный трекер
     save_ndz_tracker(tracker)
+
+
+def process_evening_check(now_moscow: datetime):
+    """
+    Проверяет заказы в 21:00 с доставкой на завтра и определенными статусами/типами.
+    """
+    print("\n--- Запуск вечерней проверки заказов на завтра (21:00) ---")
+
+    # 1. Определяем даты для фильтра (завтрашний день)
+    tomorrow = now_moscow.date() + timedelta(days=1)
+    date_from = tomorrow.strftime('%Y-%m-%d')
+    date_to = (tomorrow + timedelta(days=1)).strftime('%Y-%m-%d') # до конца завтрашнего дня
+
+    # 2. Получаем заказы из CRM
+    orders_data = get_orders_for_evening_check(date_from, date_to)
+
+    if not orders_data or not orders_data.get('orders'):
+        print("Не найдено заказов для вечерней проверки или произошла ошибка.")
+        print("-" * 50)
+        return
+
+    orders_list = orders_data['orders']
+    print(f"Найдено {len(orders_list)} заказов с доставкой на завтра для проверки.")
+
+    # 3. Определяем время для задачи (завтра в 10:00)
+    task_datetime = (now_moscow + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
+    task_datetime_str = task_datetime.strftime('%Y-%m-%d %H:%M')
+
+    # 4. Обрабатываем каждый заказ
+    for order in orders_list:
+        order_id = order.get('id')
+        manager_id = order.get('managerId')
+
+        if not manager_id:
+            print(f"  В заказе {order_id} не указан ответственный менеджер. Пропускаем.")
+            continue
+
+        print(f"  ⚠️ Создаю задачу для заказа ID: {order_id}")
+
+        task_data = {
+            'text': "Актуализировать данные по заказу: дата и статус.",
+            'datetime': task_datetime_str,
+            'performerId': manager_id,
+            'order': {'id': order_id}
+        }
+
+        response = create_task(task_data)
+
+        if response.get('success'):
+            print(f"    ✅ Задача успешно создана! ID задачи: {response.get('id')}")
+        else:
+            print(f"    ❌ Ошибка при создании задачи: {response}")
+
+    print("--- Вечерняя проверка заказов завершена ---")
 
 
 # --- ИЗМЕНЕННАЯ ФУНКЦИЯ main() ---
@@ -711,7 +763,7 @@ def main():
         if orders_in_tracker_ids:
             print(f"  Получаю данные для {len(orders_in_tracker_ids)} заказов, находящихся в трекере НДЗ.")
             # Получаем актуальные данные для заказов, которые уже в цикле
-            tracker_orders_data = get_orders_by_statuses(None, order_ids=orders_in_tracker_ids)
+            tracker_orders_data = get_orders_by_statuses(statuses=None, order_ids=orders_in_tracker_ids)
             if tracker_orders_data:
                 orders_for_processing.extend(tracker_orders_data.get('orders', []))
 
@@ -723,22 +775,24 @@ def main():
             print(f"  Новых или отслеживаемых заказов по методу '{MISSED_CALL_METHOD}' не найдено.")
             print("-" * 50)
 
-    # --- БЛОК 3: Проверка не доставленных сегодня заказов (только в 21:00) ---
+    # --- БЛОК 3: Проверки в 21:00 ---
     if is_evening_run:
+        # Проверка не доставленных сегодня заказов
         print(f"\n--- Запускаю проверку не доставленных заказов (Время: {current_time_str}) ---")
-
         today_date_str = now_moscow.strftime('%Y-%m-%d')
-
         undelivered_orders_data = get_orders_by_delivery_date(today_date_str)
-
         if undelivered_orders_data:
             undelivered_orders = undelivered_orders_data.get('orders', [])
             print(f"Найдено {len(undelivered_orders)} заказов с доставкой на сегодня.")
             process_undelivered_orders(undelivered_orders, now_moscow)
         else:
             print("Не найдено заказов с доставкой на сегодня.")
+
+        # Новая проверка заказов на завтра
+        process_evening_check(now_moscow)
     else:
-        print(f"\n--- Проверка не доставленных заказов пропущена (Запуск в {current_time_str}) ---")
+        print(f"\n--- Вечерние проверки пропущены (Запуск в {current_time_str}) ---")
+
 
     # --- БЛОК 4: Обработка последних 50 заказов для анализа комментариев (ОСТАВЛЕНО) ---
     print("\n--- Запускаю обработку последних 50 заказов для анализа комментариев ---")

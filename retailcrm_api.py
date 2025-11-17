@@ -172,20 +172,17 @@ def get_orders_by_delivery_date(date_str: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def get_orders_by_statuses(statuses: List[str]) -> Optional[Dict[str, Any]]:
+def get_orders_by_statuses(statuses: List[str], order_ids: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
     """
-    Получает заказы из RetailCRM, находящиеся в одном из указанных статусов.
-    Использует filter[extendedStatus][] для множественного запроса.
-    Устанавливает лимит 100 для обработки (только первая страница).
+    Получает заказы из RetailCRM по статусам или ID.
     """
-    # Убедитесь, что List импортирован: from typing import Dict, Any, Optional, List
-    print(f"Запрос заказов со статусами: {', '.join(statuses)}...")
-
-    # requests автоматически преобразует список в повторяющиеся параметры типа filter[extendedStatus][]=status1&...
-    params = {
-        'filter[extendedStatus][]': statuses,
-        'limit': 100
-    }
+    params = {'limit': 100}
+    if statuses:
+        print(f"Запрос заказов со статусами: {', '.join(statuses)}...")
+        params['filter[extendedStatus][]'] = statuses
+    if order_ids:
+        print(f"Запрос заказов по ID: {', '.join(order_ids)}...")
+        params['filter[ids][]'] = order_ids
 
     data = fetch_data_from_retailcrm("orders", params=params)
 
@@ -206,6 +203,36 @@ def get_orders_by_method_and_date_range(method_code: str, date_from: str, date_t
         'filter[createdAtFrom]': date_from,
         'filter[createdAtTo]': date_to,
         'limit': 100 # Установим лимит 100, чтобы охватить все новые заказы за период.
+    }
+
+    data = fetch_data_from_retailcrm("orders", params=params)
+
+    if data.get('success') and data.get('orders'):
+        return data
+    return None
+
+
+def get_orders_for_evening_check(date_from: str, date_to: str) -> Optional[Dict[str, Any]]:
+    """
+    Получает заказы для вечерней проверки (21:00) по набору фильтров.
+    """
+    print(f"Запрос заказов для вечерней проверки с доставкой от {date_from} до {date_to}...")
+
+    params = {
+        'filter[extendedStatus][]': [
+            "zakazat-nalichie",
+            "ozhidaet-nalichie",
+            "soglasovanie-dostavki",
+            "send-to-assembling",
+            "assembling"
+        ],
+        'filter[deliveryTypes][]': [
+            "self-delivery",
+            "ekspress-dostavka-rasschityvaetsia-individualno"
+        ],
+        'filter[deliveryDateFrom]': date_from,
+        'filter[deliveryDateTo]': date_to,
+        'limit': 100
     }
 
     data = fetch_data_from_retailcrm("orders", params=params)
